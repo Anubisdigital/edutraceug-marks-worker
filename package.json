@@ -1,17 +1,17 @@
 {
   "name": "edutraceug-marks-worker",
   "version": "1.0.0",
-  "description": "Edutrace UG Marks Entry, Assessment Engine and Report Card Worker",
-  "main": "index.js",
+  "private": true,
+  "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
   },
   "dependencies": {
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "wrangler": "^3.0.0"
-  },
-  "private": true
+    "wrangler": "^3.80.0"
+  }
 }
