@@ -6,7 +6,7 @@ Backend REST microservice for managing assessment score grids, Excel mark upload
 
 ## Required Cloudflare Secrets
 
-Before deploying, configure the following secrets in Cloudflare Workers using Wrangler or the Cloudflare Dashboard:
+Before deploying, configure the following secrets in Cloudflare Workers using Wrangler or the Cloudflare Dashboard:  play it
 
 ```bash
 npx wrangler secret put ACCOUNT_SERVICE_FIREBASE
