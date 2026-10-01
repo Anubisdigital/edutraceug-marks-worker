@@ -1,0 +1,11 @@
+name = "edutraceug-marks-worker"
+main = "index.js"
+compatibility_date = "2026-01-01"
+
+[vars]
+ENVIRONMENT = "production"
+
+# Optional route mapping if using custom domain
+# routes = [
+#   { pattern = "api.edutrace.site/marks*", zone_name = "edutrace.site" }
+# ]
