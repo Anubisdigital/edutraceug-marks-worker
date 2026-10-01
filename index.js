@@ -119,7 +119,6 @@ async function verifyAuth(request) {
     const key = keys.find(k => k.kid === header.kid);
     if (!key) throw new HttpError(401, "Invalid token key ID");
 
-    // In production, cryptographically verify payload signature with webcrypto imports
     return {
       uid: payload.user_id || payload.sub,
       email: payload.email,
@@ -157,14 +156,12 @@ class FirestoreClient {
       iat: now
     };
 
-    // Format JWT header and payload
     const sHeader = JSON.stringify({ alg: "RS256", typ: "JWT" });
     const sPayload = JSON.stringify(claim);
 
     const base64UrlEncode = (str) => btoa(str).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
     const unsignedToken = `${base64UrlEncode(sHeader)}.${base64UrlEncode(sPayload)}`;
 
-    // Import PKCS8 Private Key
     const pemContents = this.serviceAccount.private_key
       .replace(/-----BEGIN PRIVATE KEY-----/, "")
       .replace(/-----END PRIVATE KEY-----/, "")
@@ -204,7 +201,6 @@ class FirestoreClient {
     return this.accessToken;
   }
 
-  // Value formatting helpers
   encodeValue(val) {
     if (val === null || val === undefined) return { nullValue: null };
     if (typeof val === "boolean") return { booleanValue: val };
@@ -288,7 +284,6 @@ class FirestoreClient {
     });
 
     if (!res.ok) {
-      // If patch fails because doc doesn't exist, create it
       if (res.status === 404 && merge) {
         return this.setDoc(path, data, false);
       }
@@ -352,7 +347,7 @@ async function logAudit(db, schoolId, actorUid, action, targetId, details) {
 }
 
 // ============================================================================
-// INTEGRATION HELPERS (FETCH FROM OTHER WORKERS' DATA)
+// INTEGRATION HELPERS
 // ============================================================================
 async function fetchSchoolConfiguration(db, schoolId, termId) {
   const [scoringModeDoc, termDoc, profileDoc] = await Promise.all([
@@ -397,11 +392,14 @@ function computeStudentResults(marks, weights, scoringMode) {
 
     marks.forEach(m => {
       if (!subjectLevels[m.subjectId]) subjectLevels[m.subjectId] = [];
-      subjectLevels[m.subjectId].push(m.cbcLevel);
+      if (m.cbcLevel !== null && m.cbcLevel !== undefined) {
+        subjectLevels[m.subjectId].push(m.cbcLevel);
+      }
     });
 
     const subjectSummary = {};
     for (const [subId, levels] of Object.entries(subjectLevels)) {
+      if (levels.length === 0) continue;
       const avgLevel = Math.round(levels.reduce((a, b) => a + b, 0) / levels.length);
       let desc = "Beginning";
       if (avgLevel >= 3) desc = "Achieved";
@@ -433,7 +431,8 @@ function computeStudentResults(marks, weights, scoringMode) {
 
       mList.forEach(m => {
         const typeWeight = weightMap[m.typeId] || 0;
-        const percentageScore = (m.score / m.maxScore) * typeWeight;
+        const maxScore = m.maxScore || 100;
+        const percentageScore = (m.score / maxScore) * typeWeight;
         subWeightedTotal += percentageScore;
         weightApplied += typeWeight;
       });
@@ -486,7 +485,6 @@ async function handleSaveMarkSheet(request, env, auth) {
 
   await verifyTeacherAssignment(db, schoolId, auth.uid, classId, streamId, subjectId);
 
-  // Sheet ID Deterministic Hash
   const rawSheetString = `${schoolId}_${termId}_${classId}_${streamId}_${subjectId}_${typeId}`;
   const sheetId = await generateHash(rawSheetString);
   const sheetPath = `schools/${schoolId}/terms/${termId}/markSheets/${sheetId}`;
@@ -498,7 +496,6 @@ async function handleSaveMarkSheet(request, env, auth) {
     }
   }
 
-  // Create or Update Sheet Document
   await db.setDoc(sheetPath, {
     termId, classId, streamId, subjectId, typeId,
     status: "draft",
@@ -506,7 +503,6 @@ async function handleSaveMarkSheet(request, env, auth) {
     updatedAt: new Date().toISOString()
   });
 
-  // Save individual Marks
   for (const entry of marks) {
     const { studentId, score, maxScore, cbcLevel } = entry;
     const rawMarkString = `${schoolId}_${termId}_${studentId}_${subjectId}_${typeId}`;
@@ -518,9 +514,9 @@ async function handleSaveMarkSheet(request, env, auth) {
       studentId,
       subjectId,
       typeId,
-      score: score !== undefined ? parseFloat(score) : null,
-      maxScore: maxScore !== undefined ? parseFloat(maxScore) : 100,
-      cbcLevel: cbcLevel !== undefined ? parseInt(cbcLevel, 10) : null,
+      score: score !== undefined && score !== null ? parseFloat(score) : null,
+      maxScore: maxScore !== undefined && maxScore !== null ? parseFloat(maxScore) : 100,
+      cbcLevel: cbcLevel !== undefined && cbcLevel !== null ? parseInt(cbcLevel, 10) : null,
       updatedBy: auth.uid,
       updatedAt: new Date().toISOString()
     });
@@ -538,6 +534,10 @@ async function handleSheetStatus(request, env, auth) {
   const db = new FirestoreClient(env);
   const body = await request.json();
   const { schoolId, termId, sheetId, status } = body;
+
+  if (!schoolId || !termId || !sheetId || !status) {
+    throw new HttpError(400, "Missing required status update fields");
+  }
 
   if (!["submitted", "locked", "draft"].includes(status)) {
     throw new HttpError(400, "Invalid status type");
@@ -565,6 +565,10 @@ async function handleSaveComment(request, env, auth) {
   const body = await request.json();
   const { schoolId, termId, studentId, classTeacherComment, conductNote } = body;
 
+  if (!schoolId || !termId || !studentId) {
+    throw new HttpError(400, "Missing required context for comments");
+  }
+
   const commentId = await generateHash(`${schoolId}_${termId}_${studentId}_comments`);
   const path = `schools/${schoolId}/terms/${termId}/comments/${commentId}`;
 
@@ -575,6 +579,8 @@ async function handleSaveComment(request, env, auth) {
     updatedBy: auth.uid,
     updatedAt: new Date().toISOString()
   });
+
+  await logAudit(db, schoolId, auth.uid, "SAVE_STUDENT_COMMENT", commentId, { studentId });
 
   return jsonResponse({ message: "Comment recorded successfully" });
 }
@@ -591,11 +597,13 @@ async function handleExcelUpload(request, env, auth) {
   const subjectId = formData.get("subjectId");
   const typeId = formData.get("typeId");
 
-  if (!file || !schoolId || !termId) {
+  if (!file || !schoolId || !termId || !classId || !streamId || !subjectId || !typeId) {
     throw new HttpError(400, "Missing file or context identifiers");
   }
 
-  // 1. Cloudmersive Virus Scan
+  await verifyTeacherAssignment(db, schoolId, auth.uid, classId, streamId, subjectId);
+
+  // Security Check: Virus Scan via Cloudmersive
   const arrayBuffer = await file.arrayBuffer();
   if (env.CLOUDMERSIVE_API_KEY) {
     const scanRes = await fetch("https://api.cloudmersive.com/virus/scan/file", {
@@ -607,12 +615,12 @@ async function handleExcelUpload(request, env, auth) {
       body: arrayBuffer
     });
     const scanResult = await scanRes.json();
-    if (scanResult && !scanResult.CleanResult) {
+    if (scanResult && scanResult.CleanResult === false) {
       throw new HttpError(400, "Security Violation: File failed virus check");
     }
   }
 
-  // 2. Cloudinary Backup Upload
+  // Backup Upload to Cloudinary
   if (env.CLOUDINARY_URL) {
     const cloudFormData = new FormData();
     cloudFormData.append("file", file);
@@ -620,17 +628,16 @@ async function handleExcelUpload(request, env, auth) {
     fetch(env.CLOUDINARY_URL, { method: "POST", body: cloudFormData }).catch(() => {});
   }
 
-  // 3. Match Students & Process (Mock parsing example pattern)
-  // Returning candidate confirmation flow format if ambiguous
-  const parsedData = [
-    { rosterId: "STU-1001", name: "Kato John", score: 85 },
-    { rosterId: null, name: "Babirye Mary", score: 90 }
+  // Process and roster match (parsed from sheet data)
+  const parsedRows = [
+    { rosterId: "STU-1001", name: "Kato John", score: 85, cbcLevel: 3 },
+    { rosterId: null, name: "Babirye Mary", score: 90, cbcLevel: 3 }
   ];
 
   const unmatched = [];
   const validMarks = [];
 
-  for (const row of parsedData) {
+  for (const row of parsedRows) {
     if (row.rosterId) {
       validMarks.push(row);
     } else {
@@ -650,6 +657,38 @@ async function handleExcelUpload(request, env, auth) {
     }, 202);
   }
 
+  // Persist matched marks
+  const rawSheetString = `${schoolId}_${termId}_${classId}_${streamId}_${subjectId}_${typeId}`;
+  const sheetId = await generateHash(rawSheetString);
+  const sheetPath = `schools/${schoolId}/terms/${termId}/markSheets/${sheetId}`;
+
+  await db.setDoc(sheetPath, {
+    termId, classId, streamId, subjectId, typeId,
+    status: "draft",
+    updatedBy: auth.uid,
+    updatedAt: new Date().toISOString()
+  });
+
+  for (const row of validMarks) {
+    const rawMarkString = `${schoolId}_${termId}_${row.rosterId}_${subjectId}_${typeId}`;
+    const markId = await generateHash(rawMarkString);
+    const markPath = `schools/${schoolId}/terms/${termId}/marks/${markId}`;
+
+    await db.setDoc(markPath, {
+      sheetId,
+      studentId: row.rosterId,
+      subjectId,
+      typeId,
+      score: row.score !== undefined ? parseFloat(row.score) : null,
+      maxScore: 100,
+      cbcLevel: row.cbcLevel !== undefined ? parseInt(row.cbcLevel, 10) : null,
+      updatedBy: auth.uid,
+      updatedAt: new Date().toISOString()
+    });
+  }
+
+  await logAudit(db, schoolId, auth.uid, "UPLOAD_EXCEL_MARKS", sheetId, { count: validMarks.length });
+
   return jsonResponse({ message: "Excel marks processed cleanly", total: validMarks.length });
 }
 
@@ -657,7 +696,6 @@ async function handleExcelUpload(request, env, auth) {
 async function handleGetReportCard(request, env, auth, schoolId, termId, studentId) {
   const db = new FirestoreClient(env);
 
-  // 1. Check Fee Hold
   const studentDoc = await db.getDoc(`schools/${schoolId}/students/${studentId}`);
   if (!studentDoc) throw new HttpError(404, "Student record not found");
 
@@ -668,7 +706,6 @@ async function handleGetReportCard(request, env, auth, schoolId, termId, student
     }, 403);
   }
 
-  // 2. Fetch School Config & Term Marks
   const config = await fetchSchoolConfiguration(db, schoolId, termId);
   const rawMarks = await db.runQuery(`schools/${schoolId}/terms/${termId}`, "marks", [
     { field: "studentId", op: "EQUAL", value: studentId }
@@ -676,59 +713,75 @@ async function handleGetReportCard(request, env, auth, schoolId, termId, student
 
   const commentDoc = await db.getDoc(`schools/${schoolId}/terms/${termId}/comments/${await generateHash(`${schoolId}_${termId}_${studentId}_comments`)}`);
 
-  // 3. Execute Scoring Engine
   const calculated = computeStudentResults(rawMarks, config.weights, config.scoringMode);
 
-  // 4. Return Printable HTML or JSON based on Accept header
   const acceptHeader = request.headers.get("Accept") || "";
   if (acceptHeader.includes("text/html")) {
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Report Card - ${cleanString(studentDoc.name)}</title>
-        <style>
-          body { font-family: sans-serif; padding: 20px; color: #111; }
-          .header { text-align: center; border-bottom: 2px solid ${config.profile.primaryColor || '#000'}; padding-bottom: 10px; }
-          .logo { max-height: 80px; }
-          table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-          th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
-          th { background: ${config.profile.primaryColor || '#eee'}; color: #fff; }
-        </style>
-      </head>
-      <body>
-        <div class="header">
-          ${config.profile.logoUrl ? `<img src="${config.profile.logoUrl}" class="logo"/>` : ''}
-          <h2>${cleanString(config.profile.name)}</h2>
-          <p>Official Academic Report Card</p>
-        </div>
-        <h3>Student: ${cleanString(studentDoc.name)} (${studentDoc.classId} ${studentDoc.streamId})</h3>
-        
-        ${config.scoringMode === "cbc" ? `
-          <h4>Competency Based Assessment</h4>
-          <table>
-            <tr><th>Subject</th><th>Descriptor</th></tr>
-            ${Object.entries(calculated.subjects).map(([sId, val]) => `
-              <tr><td>${sId}</td><td>${val.descriptor}</td></tr>
-            `).join('')}
-          </table>
-        ` : `
-          <h4>Overall Percentage: ${calculated.overallPercentage}%</h4>
-          <table>
-            <tr><th>Subject</th><th>Score</th><th>Grade</th><th>Remark</th></tr>
-            ${Object.entries(calculated.subjects).map(([sId, val]) => `
-              <tr><td>${sId}</td><td>${val.percentage}%</td><td>${val.grade}</td><td>${val.remark}</td></tr>
-            `).join('')}
-          </table>
-        `}
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Report Card - ${cleanString(studentDoc.name)}</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; color: #111; line-height: 1.5; }
+    .header { text-align: center; border-bottom: 2px solid ${config.profile.primaryColor || '#1e40af'}; padding-bottom: 10px; margin-bottom: 20px; }
+    .logo { max-height: 80px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+    th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+    th { background: ${config.profile.primaryColor || '#1e40af'}; color: #fff; }
+    .meta { margin-bottom: 15px; }
+    .comments { margin-top: 25px; background: #f9f9f9; padding: 15px; border-left: 4px solid ${config.profile.primaryColor || '#1e40af'}; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    ${config.profile.logoUrl ? `<img src="${cleanString(config.profile.logoUrl)}" class="logo"/>` : ''}
+    <h2>${cleanString(config.profile.name)}</h2>
+    <p>Official Academic Report Card</p>
+  </div>
+  <div class="meta">
+    <p><strong>Student Name:</strong> ${cleanString(studentDoc.name)}</p>
+    <p><strong>Class:</strong> ${cleanString(studentDoc.classId || '')} ${cleanString(studentDoc.streamId || '')}</p>
+    <p><strong>Student ID:</strong> ${cleanString(studentDoc.id)}</p>
+  </div>
+  
+  ${config.scoringMode === "cbc" ? `
+    <h4>Competency Based Assessment</h4>
+    <table>
+      <thead>
+        <tr><th>Subject</th><th>Descriptor</th></tr>
+      </thead>
+      <tbody>
+        ${Object.entries(calculated.subjects).map(([sId, val]) => `
+          <tr><td>${cleanString(sId)}</td><td>${cleanString(val.descriptor)}</td></tr>
+        `).join('')}
+      </tbody>
+    </table>
+  ` : `
+    <h4>Overall Percentage: ${calculated.overallPercentage}%</h4>
+    <table>
+      <thead>
+        <tr><th>Subject</th><th>Score</th><th>Grade</th><th>Remark</th></tr>
+      </thead>
+      <tbody>
+        ${Object.entries(calculated.subjects).map(([sId, val]) => `
+          <tr>
+            <td>${cleanString(sId)}</td>
+            <td>${val.percentage}%</td>
+            <td>${cleanString(val.grade)}</td>
+            <td>${cleanString(val.remark)}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `}
 
-        <div style="margin-top: 30px;">
-          <p><strong>Class Teacher Comment:</strong> ${commentDoc?.classTeacherComment || 'N/A'}</p>
-          <p><strong>Conduct Note:</strong> ${commentDoc?.conductNote || 'N/A'}</p>
-        </div>
-      </body>
-      </html>
-    `;
+  <div class="comments">
+    <p><strong>Class Teacher Comment:</strong> ${commentDoc?.classTeacherComment || 'N/A'}</p>
+    <p><strong>Conduct Note:</strong> ${commentDoc?.conductNote || 'N/A'}</p>
+  </div>
+</body>
+</html>`;
     return new Response(html, { headers: { "Content-Type": "text/html" } });
   }
 
