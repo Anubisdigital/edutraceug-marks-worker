@@ -86,121 +86,6 @@ const ABSENT_TOKENS = new Set(["abs", "absent", "a"]);
 const EXCUSED_TOKENS = new Set(["exc", "excused", "e"]);
 const NA_TOKENS = new Set(["n/a", "na", "-", "--", "—"]);
 
-// ----------------------------------------------------------------
-// Ugandan New Curriculum subject model
-// ----------------------------------------------------------------
-
-// Canonical class names (Senior 1 to Senior 6).
-const UG_CLASSES = ["Senior 1", "Senior 2", "Senior 3", "Senior 4", "Senior 5", "Senior 6"];
-
-// Compulsory core subjects for S1–S4. Configurable — matches NCDC lower-secondary
-// compulsory subjects. Any subject here is returned to every student in the class,
-// whether or not the subject appears on their roster record.
-const CORE_SUBJECTS_S1_S4 = [
-  "English",
-  "Mathematics",
-  "History",
-  "Geography",
-  "Physics",
-  "Biology",
-  "Chemistry",
-];
-
-// Compulsory core subjects for S5–S6. General Paper is universal; the two
-// subsidiaries are compulsory in most Ugandan schools.
-const CORE_SUBJECTS_S5_S6 = [
-  "General Paper",
-  "Subsidiary ICT",
-  "Subsidiary Mathematics",
-];
-
-// Elective subjects — never auto-applied to the whole class. A student only
-// appears in a grid for these if the subject is on their own roster record.
-const ELECTIVE_SUBJECTS = [
-  // Religious
-  "CRE", "IRE",
-  // Languages & Literature
-  "Luganda", "Kiswahili", "Literature", "French", "German", "Arabic", "Latin",
-  // Vocational / Practical
-  "ICT", "Agriculture", "Art and Design", "Performing Arts",
-  "Entrepreneurship", "Physical Education", "Foods and Nutrition",
-  "Technical Drawing", "Woodwork", "Metalwork", "Home Economics",
-];
-
-// A-Level combinations. Structure only — used for display and future
-// combination-assignment work. Individual A-Level subjects are returned only
-// when they appear on a student's own subjects list.
-const A_LEVEL_COMBINATIONS = [
-  { code: "PCM", subjects: ["Physics", "Chemistry", "Mathematics"] },
-  { code: "PCB", subjects: ["Physics", "Chemistry", "Biology"] },
-  { code: "BCM", subjects: ["Biology", "Chemistry", "Mathematics"] },
-  { code: "HEG", subjects: ["History", "Economics", "Geography"] },
-  { code: "MEG", subjects: ["Mathematics", "Economics", "Geography"] },
-  { code: "HEL", subjects: ["History", "Economics", "Literature"] },
-  { code: "HED", subjects: ["History", "Economics", "Divinity"] },
-  { code: "PEM", subjects: ["Physics", "Economics", "Mathematics"] },
-  { code: "EGD", subjects: ["Economics", "Geography", "Divinity"] },
-  { code: "ICT", subjects: ["Computer Science", "Economics", "Mathematics"] },
-  { code: "AGR", subjects: ["Agriculture", "Biology", "Chemistry"] },
-  { code: "CDF", subjects: ["Computer Science", "Divinity", "Literature"] },
-];
-
-// Normalise a class name coming from any source (roster upload, wizard, grid
-// query) to the canonical "Senior N" form. Accepts "S.2", "S2", "s2", "Senior 2",
-// "senior2", "  senior  2  ".
-function normalizeClassName(raw) {
-  const s = String(raw || "").trim().toLowerCase();
-  if (!s) return "";
-  const m = s.match(/^(?:senior|s\.?)\s*([1-6])$/i);
-  if (m) return `Senior ${m[1]}`;
-  // Already canonical-ish? "senior 4"
-  const m2 = s.match(/^senior\s+([1-6])$/i);
-  if (m2) return `Senior ${m2[1]}`;
-  return "";
-}
-
-// "S1–S2" | "S3–S4" | "S5–S6" | "" (unknown)
-function classBand(className) {
-  const canon = normalizeClassName(className);
-  if (!canon) return "";
-  const n = parseInt(canon.slice(-1), 10);
-  if (n === 1 || n === 2) return "S1-S2";
-  if (n === 3 || n === 4) return "S3-S4";
-  if (n === 5 || n === 6) return "S5-S6";
-  return "";
-}
-
-// Trim + lowercase for case-insensitive subject comparison.
-function normalizeSubject(s) {
-  return String(s || "").trim().toLowerCase();
-}
-
-// Build a set of normalized subject names from an array of anything.
-function subjectSetFromArray(arr) {
-  const out = new Set();
-  if (!Array.isArray(arr)) return out;
-  for (const v of arr) {
-    const n = normalizeSubject(v);
-    if (n) out.add(n);
-  }
-  return out;
-}
-
-// Decide whether a subject should be auto-applied to every student in a class,
-// regardless of the student's own subjects list.
-function isCoreSubjectForClass(subject, className) {
-  const band = classBand(className);
-  const s = normalizeSubject(subject);
-  if (!band || !s) return false;
-  if (band === "S1-S2" || band === "S3-S4") {
-    return CORE_SUBJECTS_S1_S4.some((x) => normalizeSubject(x) === s);
-  }
-  if (band === "S5-S6") {
-    return CORE_SUBJECTS_S5_S6.some((x) => normalizeSubject(x) === s);
-  }
-  return false;
-}
-
 // ================================================================
 // Errors
 // ================================================================
@@ -789,22 +674,15 @@ async function requirePermission(env, schoolId, uid, key) {
 
 function assignmentCovers(teacher, className, stream, subject) {
   if (!Array.isArray(teacher.assignments)) return false;
-  const cn = normalizeClassName(className) || String(className || "").trim();
-  const sn = normalizeSubject(subject);
-  return teacher.assignments.some((a) => {
-    const ac = normalizeClassName(a.class) || String(a.class || "").trim();
-    if (ac !== cn) return false;
-    if (String(a.stream || "") !== String(stream || "")) return false;
-    return normalizeSubject(a.subject) === sn;
-  });
+  return teacher.assignments.some(
+    (a) => a.class === className && String(a.stream || "") === String(stream || "") && a.subject === subject
+  );
 }
 
 function classTeacherCovers(teacher, className, stream) {
   const ct = teacher.classTeacherOf;
   if (!ct || typeof ct !== "object") return false;
-  const cn = normalizeClassName(className) || String(className || "").trim();
-  const ccn = normalizeClassName(ct.class) || String(ct.class || "").trim();
-  if (ccn !== cn) return false;
+  if (ct.class !== className) return false;
   if (ct.stream && stream && ct.stream !== stream) return false;
   return true;
 }
@@ -813,8 +691,6 @@ function classTeacherCovers(teacher, className, stream) {
 // Roster
 // ================================================================
 
-// Full roster fetch — used when we need every student in a class/stream,
-// regardless of subject (e.g. Excel matching).
 async function fetchRosterStudents(env, schoolId, className, stream) {
   const filters = [fsEq("recordType", "student"), fsEq("class", className)];
   if (stream) filters.push(fsEq("stream", stream));
@@ -829,25 +705,6 @@ async function fetchRosterStudents(env, schoolId, className, stream) {
     return str(a.data.firstName).localeCompare(str(b.data.firstName));
   });
   return rows;
-}
-
-// Subject-aware fetch for the marks grid.
-//
-// Rules:
-//   - Core subjects for the class band (see CORE_SUBJECTS_S1_S4 / CORE_SUBJECTS_S5_S6)
-//     return all students in the class/stream, whether or not the subject is on
-//     their own record.
-//   - Any other subject (electives, A-Level combination subjects) returns only
-//     students whose own `subjects` array includes it (trimmed, case-insensitive).
-async function fetchGridStudents(env, schoolId, className, stream, subject) {
-  const all = await fetchRosterStudents(env, schoolId, className, stream);
-  if (isCoreSubjectForClass(subject, className)) return all;
-
-  const target = normalizeSubject(subject);
-  return all.filter((s) => {
-    const set = subjectSetFromArray(s.data && s.data.subjects);
-    return set.has(target);
-  });
 }
 
 function normalizeName(s) {
@@ -970,6 +827,7 @@ function detectHeaderRow(matrix, activeTypes) {
       const key = normalizeHeaderCell(row[c]);
       if (!key) continue;
 
+      // Identity columns
       for (const field of ["rosterId", "firstName", "lastName", "name", "class", "stream"]) {
         if (map[field] !== undefined) continue;
         if (ALIASES[field].includes(key)) {
@@ -978,6 +836,7 @@ function detectHeaderRow(matrix, activeTypes) {
           break;
         }
       }
+      // Assessment type columns
       if (typeNamesNormalized.has(key)) {
         const typeId = typeNamesNormalized.get(key);
         if (!map.types) map.types = {};
@@ -996,6 +855,7 @@ function detectHeaderRow(matrix, activeTypes) {
   }
   if (best) return best;
 
+  // Positional fallback: rosterId or firstName, lastName, then active types in order
   const map = { types: {} };
   let col = 0;
   map.rosterId = 0; col = 1;
@@ -1050,6 +910,7 @@ function readRowsFromWorkbook(buffer, activeTypes) {
   return { columns, rows };
 }
 
+// Interpret a cell value as { status, score, level }
 function interpretCell(raw, scoringMode, maxLevel) {
   const v = String(raw ?? "").trim();
   if (v === "") return null;
@@ -1138,7 +999,7 @@ async function handleGetGrid(request, env, schoolId, url) {
   const maxScores = resolveMaxScores(term, types);
   const weights = resolveWeights(term, types);
   const [students, marksByRoster] = await Promise.all([
-    fetchGridStudents(env, schoolId, className, stream, subject),
+    fetchRosterStudents(env, schoolId, className, stream),
     fetchGridMarks(env, schoolId, termId, className, stream, subject, typeId),
   ]);
 
@@ -1176,7 +1037,6 @@ async function handleGetGrid(request, env, schoolId, url) {
     typeName: types.find((t) => t.id === typeId)?.name || typeId,
     maxScore: maxScores[typeId],
     weight: weights[typeId],
-    isCoreSubject: isCoreSubjectForClass(subject, className),
     sheet: sheet
       ? { id: sheetId, status: sheet.status, submittedAt: sheet.submittedAt || null, lockedAt: sheet.lockedAt || null }
       : { id: sheetId, status: "open", submittedAt: null, lockedAt: null },
@@ -1216,8 +1076,7 @@ async function handlePutGrid(request, env, schoolId) {
   const defaultMax = toNumberOrNull(body.maxScore) || maxScores[typeId];
   const maxLevel = scoring.cbcLevels.length;
 
-  // Only students who legitimately take this subject can receive a mark.
-  const students = await fetchGridStudents(env, schoolId, className, stream, subject);
+  const students = await fetchRosterStudents(env, schoolId, className, stream);
   const validRoster = new Set(students.map((s) => s.id));
 
   const nowIso = new Date().toISOString();
@@ -1228,9 +1087,7 @@ async function handlePutGrid(request, env, schoolId) {
   for (const e of body.entries) {
     if (!e || typeof e !== "object") throw new HttpError(400, "Each entry must be an object");
     const rosterId = str(e.rosterId).trim();
-    if (!rosterId || !validRoster.has(rosterId)) {
-      throw new HttpError(400, `rosterId not eligible for this subject: ${rosterId}`);
-    }
+    if (!rosterId || !validRoster.has(rosterId)) throw new HttpError(400, `rosterId not in class: ${rosterId}`);
 
     const status = MARK_STATUSES.includes(e.status) ? e.status : null;
     if (!status) throw new HttpError(400, `Invalid status for ${rosterId}`);
@@ -1326,8 +1183,7 @@ async function handleDownloadTemplate(request, env, schoolId, url) {
   ]);
   if (types.length === 0) throw new HttpError(400, "No active assessment types");
 
-  // Template rows follow the same subject rule as the grid.
-  const students = await fetchGridStudents(env, schoolId, className, stream, subject);
+  const students = await fetchRosterStudents(env, schoolId, className, stream);
 
   const headers = ["rosterId", "firstName", "lastName", ...types.map((t) => t.name)];
   const rows = students.map((s) => [
@@ -1399,7 +1255,7 @@ async function handleExcelUpload(request, env, schoolId) {
 
   const bytes = await file.arrayBuffer();
 
-  // Virus scan
+  // 1. Virus scan (same pipeline as roster/uploads)
   const scan = await scanFileForViruses(env, bytes, file.name || "upload");
   if (!scan.clean) {
     throw new HttpError(400, "File failed the virus scan and was not processed.", {
@@ -1407,7 +1263,7 @@ async function handleExcelUpload(request, env, schoolId) {
     });
   }
 
-  // Archive
+  // 2. Archive raw file to Cloudinary
   let cloudinaryUrl = null;
   try {
     const uploaded = await uploadRawToCloudinary(
@@ -1418,10 +1274,11 @@ async function handleExcelUpload(request, env, schoolId) {
     );
     cloudinaryUrl = uploaded.url;
   } catch (err) {
+    // Archival is best-effort — the marks data itself is what matters.
     console.error("Cloudinary archive failed:", err && err.message);
   }
 
-  // Parse
+  // 3. Parse
   const [types, scoring, term] = await Promise.all([
     listAssessmentTypes(env, schoolId),
     getScoringSettings(env, schoolId),
@@ -1433,8 +1290,8 @@ async function handleExcelUpload(request, env, schoolId) {
   const maxScores = resolveMaxScores(term, types);
   const maxLevel = scoring.cbcLevels.length;
 
-  // Subject-aware roster. Only students eligible for this subject are matched.
-  const students = await fetchGridStudents(env, schoolId, className, stream, subject);
+  // 4. Match rows to roster
+  const students = await fetchRosterStudents(env, schoolId, className, stream);
   const byId = new Map(students.map((s) => [s.id, s]));
   const byName = new Map();
   for (const s of students) {
@@ -1443,10 +1300,10 @@ async function handleExcelUpload(request, env, schoolId) {
     byName.get(key).push(s);
   }
 
-  const matched = [];
-  const ambiguous = [];
-  const notFound = [];
-  const cellErrors = [];
+  const matched = []; // { row, student }
+  const ambiguous = []; // { row, candidates: [rosterId] }
+  const notFound = []; // { row, reason }
+  const cellErrors = []; // { row, error }
 
   for (const row of parsedRows) {
     let student = null;
@@ -1490,6 +1347,7 @@ async function handleExcelUpload(request, env, schoolId) {
       continue;
     }
 
+    // Validate and interpret each cell
     const cleaned = {};
     let rowHasError = false;
     for (const type of types) {
@@ -1510,6 +1368,7 @@ async function handleExcelUpload(request, env, schoolId) {
     matched.push({ student, cells: cleaned });
   }
 
+  // 5. If there are ambiguous rows, return them with a signed state — caller confirms and re-posts
   if (ambiguous.length > 0) {
     const state = await signState(env, {
       termId, className, stream, subject,
@@ -1533,6 +1392,7 @@ async function handleExcelUpload(request, env, schoolId) {
     };
   }
 
+  // 6. No ambiguity — write everything
   const writeResult = await writeParsedMarks(env, schoolId, {
     termId, className, stream, subject,
     scoring, types, maxScores,
@@ -1568,6 +1428,7 @@ async function writeParsedMarks(env, schoolId, ctx) {
       const markId = await computeMarkId(termId, rosterId, subject, typeId);
       const cellMax = scoring.mode === "percentage" ? maxScores[typeId] : null;
 
+      // Percentage: reject scores above maxScore
       if (scoring.mode === "percentage" && parsed.status === "entered") {
         if (parsed.score > cellMax) {
           throw new HttpError(400, `Score ${parsed.score} exceeds maxScore ${cellMax} (row ${rosterId}, type ${typeId})`);
@@ -1636,16 +1497,21 @@ async function handleExcelConfirm(request, env, schoolId) {
   ]);
   const maxScores = resolveMaxScores(term, types);
 
-  const students = await fetchGridStudents(env, schoolId, className, stream, subject);
+  // The confirm payload includes the ambiguous rows again so we can resolve them
+  // by excelRow → rosterId. We re-fetch the roster to validate.
+  const students = await fetchRosterStudents(env, schoolId, className, stream);
   const byId = new Map(students.map((s) => [s.id, s]));
 
+  // The frontend sends { [excelRow]: rosterId }, and the matched rows it kept.
+  // If the frontend wants to also pass the ambiguous row cells, it can — we
+  // re-interpret here from the initial body.entries if present.
   const extraMatched = [];
   if (Array.isArray(body.ambiguousRows)) {
     for (const row of body.ambiguousRows) {
       const resolvedRosterId = resolutions[String(row.excelRow)];
       if (!resolvedRosterId) continue;
       const student = byId.get(resolvedRosterId);
-      if (!student) throw new HttpError(400, `Resolved rosterId ${resolvedRosterId} not eligible for this subject`);
+      if (!student) throw new HttpError(400, `Resolved rosterId ${resolvedRosterId} not in class`);
 
       const cleaned = {};
       const cells = row.cells || {};
@@ -1662,6 +1528,7 @@ async function handleExcelConfirm(request, env, schoolId) {
     }
   }
 
+  // Merge initial matched rows + newly resolved rows
   const allMatched = [...matched.map((m) => ({ student: byId.get(m.rosterId) || { id: m.rosterId, data: {} }, cells: m.cells })), ...extraMatched]
     .filter((m) => m.student);
 
@@ -1764,15 +1631,6 @@ async function handleGetConfig(request, env, schoolId, url) {
     weights: resolveWeights(term, types),
     publishRank: term.publishRank === true,
     gradingScale: scale,
-    // Expose the Ugandan subject model so the frontend can render pickers
-    // without duplicating constants.
-    uganda: {
-      classes: UG_CLASSES,
-      coreS1S4: CORE_SUBJECTS_S1_S4,
-      coreS5S6: CORE_SUBJECTS_S5_S6,
-      electives: ELECTIVE_SUBJECTS,
-      combinations: A_LEVEL_COMBINATIONS,
-    },
   };
 }
 
@@ -1884,6 +1742,7 @@ async function fetchMarksForClass(env, schoolId, termId, className, stream) {
   });
 }
 
+// Percentage-mode aggregation
 function computePercentageReport(marks, types, term) {
   const maxScores = resolveMaxScores(term, types);
   const weights = resolveWeights(term, types);
@@ -1931,6 +1790,7 @@ function computePercentageReport(marks, types, term) {
       }
     }
 
+    // Normalize over present weights so partial entry still reads as a meaningful %
     const pct = weightsPresent > 0 ? round1((weightedRaw / weightsPresent) * 100) : null;
     subjects.push({
       name: subject,
@@ -1949,9 +1809,11 @@ function computePercentageReport(marks, types, term) {
   return { subjects, overall: { pct: overallPct }, rollup: null };
 }
 
+// CBC-mode aggregation — no percentage anywhere
 function computeCbcReport(marks, types, cbcLevels) {
   const levels = cbcLevels.slice().sort((a, b) => a.level - b.level);
   const levelByValue = new Map(levels.map((l) => [l.level, l]));
+  const maxLevel = levels.length ? levels[levels.length - 1].level : 3;
 
   const bySubject = new Map();
   for (const m of marks) {
@@ -2017,6 +1879,7 @@ async function computeRanksForClass(env, schoolId, termId, className, stream, ty
       const { overall } = computePercentageReport(marks, types, term);
       if (overall.pct !== null) ranked.push({ rosterId, key: overall.pct });
     } else {
+      // CBC: rank by count of Achieved (highest level)
       const maxLevel = scoring.cbcLevels.length;
       const achieved = marks.filter((m) => m.status === "entered" && m.level === maxLevel).length;
       ranked.push({ rosterId, key: achieved });
@@ -2058,21 +1921,40 @@ async function buildStudentReport(env, schoolId, rosterId, termId, { includeRank
   const marksDocs = await fetchMarksForStudent(env, schoolId, termId, rosterId);
   const marks = marksDocs.map((m) => m.data);
 
+  // Include all types that have marks, plus all active types, so empty cells render as blanks.
   const activeTypes = types.filter((t) => !t.archived);
+  const typeIdsWithMarks = new Set(marks.map((m) => m.typeId).filter(Boolean));
+  const reportTypes = activeTypes.filter((t) => typeIdsWithMarks.has(t.id) || true); // show all active types
 
   let report;
   if (scoring.mode === "cbc") {
-    report = computeCbcReport(marks, activeTypes, scoring.cbcLevels);
+    report = computeCbcReport(marks, reportTypes, scoring.cbcLevels);
   } else {
-    report = computePercentageReport(marks, activeTypes, term);
+    report = computePercentageReport(marks, reportTypes, term);
     for (const s of report.subjects) s.grade = applyGradingScale(s.pct, scale);
     report.overall.grade = applyGradingScale(report.overall.pct, scale);
   }
 
+  // List every subject the student takes, even ones with no marks yet.
+  const taken = Array.isArray(student.subjects) ? student.subjects : [];
+  const have = new Set(report.subjects.map((s) => String(s.name).toLowerCase()));
+  for (const name of taken) {
+    const key = String(name || "").toLowerCase();
+    if (!key || have.has(key)) continue;
+    have.add(key);
+    const blank = reportTypes.map((t) => scoring.mode === "cbc"
+      ? { typeId: t.id, typeName: t.name, status: "missing", level: null }
+      : { typeId: t.id, typeName: t.name, status: "missing", score: null, maxScore: null, weight: 0, contribution: 0 });
+    report.subjects.push(scoring.mode === "cbc"
+      ? { name, assessments: blank, level: null }
+      : { name, assessments: blank, weightedRaw: 0, weightsPresent: 0, pct: null, grade: null });
+  }
+  report.subjects.sort((a, b) => a.name.localeCompare(b.name));
+
   let rank = null;
   if (includeRank && term.publishRank === true) {
     const { positions, totalRanked } = await computeRanksForClass(
-      env, schoolId, termId, student.class, student.stream || "", activeTypes, term, scoring
+      env, schoolId, termId, student.class, student.stream || "", reportTypes, term, scoring
     );
     rank = { position: positions.get(rosterId) || null, total: totalRanked };
   }
@@ -2351,6 +2233,7 @@ function renderCbcReportHtml({ report, school }) {
 
   const t = report.term, s = report.student;
   const types = report.subjects[0]?.assessments || [];
+  const levelByValue = new Map(report.cbcLevels.map((l) => [l.level, l]));
 
   const rowsHtml = report.subjects.map((sub) => {
     const cells = sub.assessments.map((a) => {
@@ -2719,3 +2602,4 @@ export default {
     }
   },
 };
+
